@@ -45,7 +45,7 @@ func emit(conn *websocket.Conn, event string, data interface{}) {
 	conn.WriteJSON(msg)
 }
 
-func RunCode(conn *websocket.Conn, code []byte) error {
+func RunCode(conn *websocket.Conn, code []byte, inputChan <-chan string) error {
 	//Synchronization pipe to ensure that parent is the one that spawned the child process
 	readFd, writeFd, err := os.Pipe()
 
@@ -64,6 +64,7 @@ func RunCode(conn *websocket.Conn, code []byte) error {
 	cmd.ExtraFiles = []*os.File{readFd, readCode}
 	stdout, _ := cmd.StdoutPipe()
 	stderr, _ := cmd.StderrPipe()
+	stdin, _ := cmd.StdinPipe()
 
 	hostUid := os.Getuid()
 	hostGid := os.Getgid()
@@ -119,6 +120,24 @@ func RunCode(conn *websocket.Conn, code []byte) error {
 		}
 	}()
 
+	done := make(chan struct{})
+
+	go func() {
+		defer stdin.Close()
+
+		for {
+			select {
+			case text := <-inputChan:
+				_, err := stdin.Write([]byte(text + "\n"))
+				if err != nil {
+					continue
+				}
+			case <-done:
+				return
+			}
+		}
+	}()
+
 	cgPath, err := attachToCGroup(cmd.Process.Pid)
 	if err != nil {
 		return err
@@ -132,6 +151,7 @@ func RunCode(conn *websocket.Conn, code []byte) error {
 		return err
 	}
 
+	close(done)
 	emit(conn, "finished", nil)
 
 	return nil
@@ -205,6 +225,7 @@ func RunChild() {
 	env := []string{
 		"PATH=/usr/bin:/bin",
 		"LANG=en_US.UTF-8",
+		"PYTHONUNBUFFERED=1",
 	}
 
 	if err := setUpSeccomp(); err != nil {

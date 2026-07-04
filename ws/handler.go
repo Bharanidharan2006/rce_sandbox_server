@@ -18,9 +18,8 @@ type CodePayload struct {
 	Code     string `json:"code"`
 }
 
-type OutputPayload struct {
-	Stream string `json:"stream"`
-	Text   string `json:"text"`
+type InputPayload struct {
+	Text string `json:"text"`
 }
 
 var upgrader = websocket.Upgrader{
@@ -36,6 +35,8 @@ func HandleConnection(w http.ResponseWriter, r *http.Request) {
 
 	defer conn.Close()
 
+	inputChan := make(chan string, 10)
+	defer close(inputChan)
 	for {
 		_, rawBytes, err := conn.ReadMessage()
 
@@ -55,7 +56,15 @@ func HandleConnection(w http.ResponseWriter, r *http.Request) {
 
 			json.Unmarshal(socketMessage.Data, &payload)
 
-			sandbox.RunCode(conn, []byte(payload.Code))
+			go sandbox.RunCode(conn, []byte(payload.Code), inputChan)
+		case "input":
+			var payload InputPayload
+			json.Unmarshal(socketMessage.Data, &payload)
+
+			select {
+			case inputChan <- payload.Text:
+			default:
+			}
 		}
 	}
 }
