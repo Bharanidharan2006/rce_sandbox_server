@@ -1,7 +1,7 @@
 package sandbox
 
 import (
-	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -10,10 +10,23 @@ import (
 	"os/exec"
 	"runtime"
 	"syscall"
+
+	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
+	"golang.org/x/sys/unix"
 )
 
-const newRoot string = "/tmp/rootfs"
 const oldRoot string = "put_old"
+
+type socketMessage struct {
+	Event string          `json:"event"`
+	Data  json.RawMessage `json:"data"`
+}
+
+type outputPayload struct {
+	Stream string `json:"stream"`
+	Text   string `json:"text"`
+}
 
 func must(err error) {
 	if err != nil {
@@ -22,22 +35,23 @@ func must(err error) {
 	}
 }
 
-func RunCode(code []byte) error{
-	return createSanbox(code)
+func emit(conn *websocket.Conn, event string, data interface{}) {
+	dataBytes, _ := json.Marshal(data)
+	msg := socketMessage{
+		Event: event,
+		Data:  dataBytes,
+	}
+
+	conn.WriteJSON(msg)
 }
 
-func createSanbox(code []byte) error {
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
+func RunCode(conn *websocket.Conn, code []byte) error {
 	//Synchronization pipe to ensure that parent is the one that spawned the child process
 	readFd, writeFd, err := os.Pipe()
 
 	if err != nil {
 		return errors.New("Error: Synchronization pipe cannot be created")
 	}
-
-	defer readFd.Close()
-	defer writeFd.Close()
 
 	//Another pipe to send code to the child
 	readCode, writeCode, err := os.Pipe()
@@ -46,13 +60,10 @@ func createSanbox(code []byte) error {
 		return errors.New("Error: Code pipe cannot be created")
 	}
 
-	defer writeCode.Close()
-	defer readCode.Close()
-
 	cmd := exec.Command("/proc/self/exe", "child")
 	cmd.ExtraFiles = []*os.File{readFd, readCode}
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdout, _ := cmd.StdoutPipe()
+	stderr, _ := cmd.StderrPipe()
 
 	hostUid := os.Getuid()
 	hostGid := os.Getgid()
@@ -70,23 +81,58 @@ func createSanbox(code []byte) error {
 	if err := cmd.Start(); err != nil {
 		return errors.New("Error: Cannot spawn child process")
 	}
+	readFd.Close()
+	readCode.Close()
 
 	writeCode.Write(code)
+	writeCode.Close()
 
-	if err := AttachToCGroup(cmd); err != nil{
+	go func() {
+		buf := make([]byte, 1024)
+		for {
+			n, err := stdout.Read(buf)
+			if n > 0 {
+				emit(conn, "output", outputPayload{
+					Stream: "stdout",
+					Text:   string(buf[:n]),
+				})
+			}
+			if err != nil {
+				break
+			}
+		}
+	}()
+
+	go func() {
+		buf := make([]byte, 1024)
+		for {
+			n, err := stderr.Read(buf)
+			if n > 0 {
+				emit(conn, "output", outputPayload{
+					Stream: "stderr",
+					Text:   string(buf[:n]),
+				})
+			}
+			if err != nil {
+				break
+			}
+		}
+	}()
+
+	cgPath, err := attachToCGroup(cmd.Process.Pid)
+	if err != nil {
+		return err
+	}
+	defer os.Remove(cgPath)
+
+	writeFd.Write([]byte{0})
+	writeFd.Close()
+
+	if err := cmd.Wait(); err != nil {
 		return err
 	}
 
-	writeFd.Write([]byte{0})
-
-	if err := cmd.Wait(); err != nil {
-		errLine := stderr.String()
-		fmt.Println(errLine)
-		return errors.New("Error: Command exited with status code 1")
-	}
-
-	result := stdout.String()
-	fmt.Println(result)
+	emit(conn, "finished", nil)
 
 	return nil
 }
@@ -105,32 +151,41 @@ func RunChild() {
 	codePipe.Close()
 
 	buf := make([]byte, 1)
-	syncPipe.Read(buf)
-	syncPipe.Close() 
+	n, err := syncPipe.Read(buf)
+	if err != nil || n == 0 {
+		log.Fatal("The child is not spawned by the parent")
+	}
+	syncPipe.Close()
 
 	must(syscall.Sethostname([]byte("container")))
 
 	// Pivot root cannot be done on shared mount propagation so make it private recursive and then create a bind mount on the new root directory
 	must(syscall.Mount("", "/", "", syscall.MS_PRIVATE|syscall.MS_REC, ""))
-	must(syscall.Mount(newRoot, newRoot, "", syscall.MS_BIND|syscall.MS_REC, ""))
 
+	requestID := uuid.New().String()
+	mergedDir, err := prepareFileSystem(requestID)
 
-	procDir := newRoot + "/proc"
+	procDir := mergedDir + "/proc"
 	// Everybody can read it though only the owner can do crud
 	must(os.MkdirAll(procDir, 0755))
 	flags := uintptr(syscall.MS_NOEXEC | syscall.MS_NOSUID | syscall.MS_NODEV)
 	must(syscall.Mount("proc", procDir, "proc", flags, ""))
 
-	pivotDir := newRoot + "/" + oldRoot
+	pivotDir := mergedDir + "/" + oldRoot
 	// 0700 - Cause we want only the owner to read, update and write it and no other person should be able to access it
 	must(os.MkdirAll(pivotDir, 0700))
 
-	must(syscall.PivotRoot(newRoot, pivotDir))
+	must(syscall.PivotRoot(mergedDir, pivotDir))
+
+	defer func() {
+		must(syscall.Unmount(mergedDir, 0))
+		must(os.RemoveAll(fmt.Sprintf("/tmp/sandbox/%s", requestID)))
+	}()
 
 	must(syscall.Chdir("/"))
 
 	// Unmount the older filesystem
-   must(syscall.Unmount("/"+oldRoot, syscall.MNT_DETACH))
+	must(syscall.Unmount("/"+oldRoot, syscall.MNT_DETACH))
 
 	// Delete that unmounted old root
 	must(os.Remove("/" + oldRoot))
@@ -139,8 +194,22 @@ func RunChild() {
 
 	//Remove all the admin capabilities before running the command
 	for i := 0; i < 64; i++ {
-		unix.Prctl(unix.PR_CAPBSET_DROP, uintptr(i), 0, 0, 0)
+		err := unix.Prctl(unix.PR_CAPBSET_DROP, uintptr(i), 0, 0, 0)
+		if err != nil && !errors.Is(err, syscall.EINVAL) {
+			fmt.Printf("Failed to drop the capability %d: %v", i, err)
+		}
 	}
 
-	must(syscall.Exec("/usr/bin/python3", []string{"python3", "/tmp/submission.py"}, os.Environ()))
+	must(unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0))
+
+	env := []string{
+		"PATH=/usr/bin:/bin",
+		"LANG=en_US.UTF-8",
+	}
+
+	if err := setUpSeccomp(); err != nil {
+		log.Fatalf("seccomp filter cannot be setup: %v", err)
+	}
+
+	must(syscall.Exec("/usr/bin/python3", []string{"python3", "/tmp/submission.py"}, env))
 }
