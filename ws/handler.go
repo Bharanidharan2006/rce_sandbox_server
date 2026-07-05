@@ -93,7 +93,7 @@ func HandleConnection(w http.ResponseWriter, r *http.Request) {
 					sendResponse("error", fmt.Sprintf("Cannot parse .env: %v", err))
 				}
 				apiKey := os.Getenv("GEMINI_API_KEY")
-				url := "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + apiKey
+				url := "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + apiKey
 				resp, err := http.Post(url, "application/json", bytes.NewBuffer(socketMessage.Data))
 				if err != nil {
 					sendResponse("error", fmt.Sprintf("Failed to reach AI: %v", err))
