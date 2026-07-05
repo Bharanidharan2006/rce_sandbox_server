@@ -1,8 +1,12 @@
 package ws
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
+	"os"
 
 	"github.com/Bharanidharan2006/rce_sandbox_server/sandbox"
 	"github.com/gorilla/websocket"
@@ -20,6 +24,11 @@ type CodePayload struct {
 
 type InputPayload struct {
 	Text string `json:"text"`
+}
+
+type ChatOutput struct {
+	Stream string          `json:"stream"`
+	Reply  json.RawMessage `json:"reply"`
 }
 
 var upgrader = websocket.Upgrader{
@@ -65,6 +74,58 @@ func HandleConnection(w http.ResponseWriter, r *http.Request) {
 			case inputChan <- payload.Text:
 			default:
 			}
+
+		case "chat":
+			go func() {
+				sendResponse := func(streamType, replyText string) {
+					innerData, _ := json.Marshal(map[string]string{
+						"stream": streamType,
+						"reply":  replyText,
+					})
+
+					conn.WriteJSON(SocketMessage{
+						Event: "chat_output",
+						Data:  innerData,
+					})
+				}
+				apiKey := os.Getenv("GEMINI_API_KEY")
+				url := "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + apiKey
+				resp, err := http.Post(url, "application/json", bytes.NewBuffer(socketMessage.Data))
+				if err != nil {
+					sendResponse("error", fmt.Sprintf("Failed to reach AI: %v", err))
+					return
+				}
+				defer resp.Body.Close()
+
+				body, _ := io.ReadAll(resp.Body)
+
+				if resp.StatusCode != http.StatusOK {
+					sendResponse("error", fmt.Sprintf("API Error (%d): %s", resp.StatusCode, string(body)))
+					return
+				}
+
+				var geminiResp struct {
+					Candidates []struct {
+						Content struct {
+							Parts []struct {
+								Text string `json:"text"`
+							} `json:"parts"`
+						} `json:"content"`
+					} `json:"candidates"`
+				}
+
+				if err := json.Unmarshal(body, &geminiResp); err != nil {
+					sendResponse("error", "Failed to parse AI response.")
+					return
+				}
+
+				replyText := "No response generated."
+				if len(geminiResp.Candidates) > 0 && len(geminiResp.Candidates[0].Content.Parts) > 0 {
+					replyText = geminiResp.Candidates[0].Content.Parts[0].Text
+				}
+
+				sendResponse("reply", replyText)
+			}()
 		}
 	}
 }
