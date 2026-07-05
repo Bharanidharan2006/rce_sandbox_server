@@ -8,3 +8,5 @@ require (
 	github.com/seccomp/libseccomp-golang v0.11.1
 	golang.org/x/sys v0.46.0
 )
+
+require github.com/joho/godotenv v1.5.1 // indirect

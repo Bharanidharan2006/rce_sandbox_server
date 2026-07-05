@@ -10,6 +10,7 @@ import (
 
 	"github.com/Bharanidharan2006/rce_sandbox_server/sandbox"
 	"github.com/gorilla/websocket"
+	"github.com/joho/godotenv"
 )
 
 type SocketMessage struct {
@@ -87,6 +88,9 @@ func HandleConnection(w http.ResponseWriter, r *http.Request) {
 						Event: "chat_output",
 						Data:  innerData,
 					})
+				}
+				if err := godotenv.Load(); err != nil {
+					sendResponse("error", fmt.Sprintf("Cannot parse .env: %v", err))
 				}
 				apiKey := os.Getenv("GEMINI_API_KEY")
 				url := "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + apiKey
