@@ -66,17 +66,8 @@ func RunCode(conn *websocket.Conn, code []byte, inputChan <-chan string) error {
 	stderr, _ := cmd.StderrPipe()
 	stdin, _ := cmd.StdinPipe()
 
-	hostUid := os.Getuid()
-	hostGid := os.Getgid()
-
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags: syscall.CLONE_NEWUTS | syscall.CLONE_NEWNS | syscall.CLONE_NEWPID | syscall.CLONE_NEWNET | syscall.CLONE_NEWUSER,
-		UidMappings: []syscall.SysProcIDMap{
-			{ContainerID: 0, HostID: hostUid, Size: 1},
-		},
-		GidMappings: []syscall.SysProcIDMap{
-			{ContainerID: 0, HostID: hostGid, Size: 1},
-		},
+		Cloneflags: syscall.CLONE_NEWUTS | syscall.CLONE_NEWNS | syscall.CLONE_NEWPID | syscall.CLONE_NEWNET,
 	}
 
 	if err := cmd.Start(); err != nil {

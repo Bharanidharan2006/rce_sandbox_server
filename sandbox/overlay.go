@@ -17,7 +17,7 @@ func prepareFileSystem(requestID string) (string, error) {
 	must(os.MkdirAll(workDir, 0755))
 	must(os.MkdirAll(mergedDir, 0755))
 
-	data := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s,userxattr", baseFS, upperDir, workDir)
+	data := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", baseFS, upperDir, workDir)
 	err := syscall.Mount("overlay", mergedDir, "overlay", 0, data)
 
 	return mergedDir, err
