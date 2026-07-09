@@ -66,13 +66,17 @@ func RunCode(conn *websocket.Conn, code []byte, inputChan <-chan string) error {
 	stderr, _ := cmd.StderrPipe()
 	stdin, _ := cmd.StdinPipe()
 
+	hostUid := os.Getuid()
+	hostGid := os.Getgid()
+
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags: syscall.CLONE_NEWUTS | syscall.CLONE_NEWNS | syscall.CLONE_NEWPID | syscall.CLONE_NEWNET,
-		// CLONE_NEWUSER is intentionally omitted: the server runs as root,
-		// so user namespace isolation is unnecessary and Ubuntu 24.04's
-		// AppArmor blocks overlayfs mounts inside user namespaces.
-		// Security is maintained via PID/mount/network/UTS namespaces,
-		// capability dropping, and seccomp filters.
+		Cloneflags: syscall.CLONE_NEWUTS | syscall.CLONE_NEWNS | syscall.CLONE_NEWPID | syscall.CLONE_NEWNET | syscall.CLONE_NEWUSER,
+		UidMappings: []syscall.SysProcIDMap{
+			{ContainerID: 0, HostID: hostUid, Size: 1},
+		},
+		GidMappings: []syscall.SysProcIDMap{
+			{ContainerID: 0, HostID: hostGid, Size: 1},
+		},
 	}
 
 	if err := cmd.Start(); err != nil {
