@@ -192,6 +192,9 @@ func RunChild() {
 
 	requestID := uuid.New().String()
 	mergedDir, err := prepareFileSystem(requestID)
+	if err != nil {
+		log.Fatalf("Failed to prepare filesystem (overlay mount): %v", err)
+	}
 
 	procDir := mergedDir + "/proc"
 	// Everybody can read it though only the owner can do crud

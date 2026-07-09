@@ -7,7 +7,7 @@ import (
 )
 
 func prepareFileSystem(requestID string) (string, error) {
-	baseFS := "/home/bharanidharan/containerfs"
+	baseFS := "/home/azureuser/containerfs"
 	upperDir := fmt.Sprintf("/tmp/sandbox/%s/upper", requestID)
 	workDir := fmt.Sprintf("/tmp/sandbox/%s/work", requestID)
 	mergedDir := fmt.Sprintf("/tmp/sandbox/%s/merged", requestID)
