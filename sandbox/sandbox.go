@@ -80,10 +80,15 @@ func RunCode(conn *websocket.Conn, code []byte, inputChan <-chan string) error {
 	}
 
 	if err := cmd.Start(); err != nil {
-		return errors.New("Error: Cannot spawn child process")
+		writeFd.Close()
+		return fmt.Errorf("Error: Cannot spawn child process: %w", err)
 	}
 	readFd.Close()
 	readCode.Close()
+
+	// Ensure writeFd is always closed so the child never hangs
+	// waiting on the sync pipe if the parent returns early.
+	defer writeFd.Close()
 
 	writeCode.Write(code)
 	writeCode.Close()
@@ -140,12 +145,15 @@ func RunCode(conn *websocket.Conn, code []byte, inputChan <-chan string) error {
 
 	cgPath, err := attachToCGroup(cmd.Process.Pid)
 	if err != nil {
-		return err
+		log.Printf("cgroup setup failed: %v – killing child", err)
+		cmd.Process.Kill()
+		cmd.Wait()
+		return fmt.Errorf("cgroup setup failed: %w", err)
 	}
 	defer os.Remove(cgPath)
 
+	// Signal the child that the parent is ready
 	writeFd.Write([]byte{0})
-	writeFd.Close()
 
 	if err := cmd.Wait(); err != nil {
 		return err

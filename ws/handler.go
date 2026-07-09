@@ -66,7 +66,17 @@ func HandleConnection(w http.ResponseWriter, r *http.Request) {
 
 			json.Unmarshal(socketMessage.Data, &payload)
 
-			go sandbox.RunCode(conn, []byte(payload.Code), inputChan)
+			go func() {
+				if err := sandbox.RunCode(conn, []byte(payload.Code), inputChan); err != nil {
+					// Send the error to the client so it shows up in the terminal
+					errData, _ := json.Marshal(map[string]string{
+						"stream": "stderr",
+						"text":   fmt.Sprintf("sandbox error: %v\n", err),
+					})
+					conn.WriteJSON(SocketMessage{Event: "output", Data: errData})
+					conn.WriteJSON(SocketMessage{Event: "finished"})
+				}
+			}()
 		case "input":
 			var payload InputPayload
 			json.Unmarshal(socketMessage.Data, &payload)
